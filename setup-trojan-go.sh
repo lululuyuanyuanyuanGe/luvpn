@@ -92,6 +92,21 @@ fi
 log "UFW configured - SSH (22), HTTP (80), HTTPS (443) allowed"
 
 #====================================================================
+# Step 1.6: Configure SSH idle timeout
+#====================================================================
+log "Step 1.6: Configuring SSH idle timeout..."
+
+sed -i 's/^#\?ClientAliveInterval.*/ClientAliveInterval 300/' /etc/ssh/sshd_config
+sed -i 's/^#\?ClientAliveCountMax.*/ClientAliveCountMax 3/' /etc/ssh/sshd_config
+
+# Add the settings if they don't exist at all
+grep -q '^ClientAliveInterval' /etc/ssh/sshd_config || echo 'ClientAliveInterval 300' >> /etc/ssh/sshd_config
+grep -q '^ClientAliveCountMax' /etc/ssh/sshd_config || echo 'ClientAliveCountMax 3' >> /etc/ssh/sshd_config
+
+systemctl restart sshd
+log "SSH idle timeout set (disconnects after ~15 minutes of inactivity)"
+
+#====================================================================
 # Step 2: Obtain TLS certificate
 #====================================================================
 log "Step 2: Obtaining TLS certificate..."
