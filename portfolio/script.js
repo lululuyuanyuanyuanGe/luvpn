@@ -1,171 +1,224 @@
 /* ═══════════════════════════════════════════
-   LUYUAN GE — PORTFOLIO SCRIPTS
+   LUYUAN GE — HACKER PORTFOLIO SCRIPTS
+   Feature Set: Matrix, Decryption, Tilt, HUD
    ═══════════════════════════════════════════ */
 
 (function () {
   'use strict';
 
-  // ── Dot-Grid Canvas Background ──
-  function initCanvas() {
-    const canvas = document.getElementById('heroCanvas');
+  gsap.registerPlugin(ScrollTrigger, TextPlugin);
+
+  // ── 1. Matrix Rain with Interaction ──
+  function initMatrix() {
+    const canvas = document.getElementById('matrixCanvas');
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    let width, height, cols, rows;
-    const spacing = 32;
-    const dotBase = 1;
+
+    let width, height, columns;
+    const fontSize = 16;
+    const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz$+-*/%=<>!&|^~';
+    let drops = [];
     let mouse = { x: -1000, y: -1000 };
-    let animId;
 
     function resize() {
-      width = canvas.width = canvas.offsetWidth;
-      height = canvas.height = canvas.offsetHeight;
-      cols = Math.ceil(width / spacing) + 1;
-      rows = Math.ceil(height / spacing) + 1;
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+      columns = Math.floor(width / fontSize);
+      drops = [];
+      for (let i = 0; i < columns; i++) {
+        drops[i] = Math.random() * -100;
+      }
     }
 
     function draw() {
-      ctx.clearRect(0, 0, width, height);
-      const radius = 180;
+      // Fade trail
+      ctx.fillStyle = 'rgba(5, 5, 5, 0.05)';
+      ctx.fillRect(0, 0, width, height);
 
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          const x = c * spacing;
-          const y = r * spacing;
-          const dx = mouse.x - x;
-          const dy = mouse.y - y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          const proximity = Math.max(0, 1 - dist / radius);
+      ctx.fillStyle = '#00ffcc';
+      ctx.font = fontSize + 'px "JetBrains Mono"';
 
-          const size = dotBase + proximity * 2.5;
-          const alpha = 0.12 + proximity * 0.55;
+      for (let i = 0; i < drops.length; i++) {
+        const text = chars[Math.floor(Math.random() * chars.length)];
+        const x = i * fontSize;
+        const y = drops[i] * fontSize;
 
-          ctx.beginPath();
-          ctx.arc(x, y, size, 0, Math.PI * 2);
-
-          if (proximity > 0.01) {
-            ctx.fillStyle = `rgba(0, 212, 170, ${alpha})`;
-          } else {
-            ctx.fillStyle = `rgba(200, 200, 208, ${alpha * 0.7})`;
-          }
-          ctx.fill();
+        // Interaction: Repel drops around mouse
+        const dist = Math.abs(x - mouse.x);
+        if (dist < 50 && Math.abs(y - mouse.y) < 50) {
+           ctx.fillStyle = '#ff00c1'; // Glitch color near mouse
+        } else {
+           ctx.fillStyle = '#00ffcc';
         }
-      }
 
-      animId = requestAnimationFrame(draw);
+        ctx.fillText(text, x, y);
+
+        if (y > height && Math.random() > 0.975) {
+          drops[i] = 0;
+        }
+        drops[i]++;
+      }
+      requestAnimationFrame(draw);
     }
 
-    canvas.addEventListener('mousemove', (e) => {
-      const rect = canvas.getBoundingClientRect();
-      mouse.x = e.clientX - rect.left;
-      mouse.y = e.clientY - rect.top;
+    window.addEventListener('mousemove', (e) => {
+      mouse.x = e.clientX;
+      mouse.y = e.clientY;
     });
-
-    canvas.addEventListener('mouseleave', () => {
-      mouse.x = -1000;
-      mouse.y = -1000;
-    });
-
-    // Touch support
-    canvas.addEventListener('touchmove', (e) => {
-      const rect = canvas.getBoundingClientRect();
-      mouse.x = e.touches[0].clientX - rect.left;
-      mouse.y = e.touches[0].clientY - rect.top;
-    }, { passive: true });
 
     window.addEventListener('resize', resize);
     resize();
     draw();
   }
 
-  // ── Scroll Reveal (IntersectionObserver) ──
-  function initReveal() {
-    const els = document.querySelectorAll('.reveal');
-    if (!els.length) return;
+  // ── 2. Decryption Text Effect (HyperText) ──
+  function initDecryption() {
+    const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789$#@%&";
+    const targets = document.querySelectorAll('[data-decrypt]');
 
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
+    const decrypt = (element) => {
+      let iterations = 0;
+      const originalText = element.getAttribute('data-decrypt');
+      // If we've already set the text, don't reset unless we want loop
+      // But we just want the effect to run once or on re-entry
+      
+      const interval = setInterval(() => {
+        element.innerText = originalText
+          .split("")
+          .map((letter, index) => {
+            if (index < iterations) {
+              return originalText[index];
+            }
+            return letters[Math.floor(Math.random() * 26)];
+          })
+          .join("");
+
+        if (iterations >= originalText.length) {
+          clearInterval(interval);
+        }
+
+        iterations += 1 / 2; // Speed of decoding
+      }, 30);
+    };
+
+    targets.forEach(target => {
+      // Use Intersection Observer to trigger
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
           if (entry.isIntersecting) {
-            entry.target.classList.add('reveal--visible');
-            observer.unobserve(entry.target);
+            decrypt(entry.target);
+            observer.unobserve(entry.target); // Run once
           }
         });
-      },
-      { threshold: 0.15, rootMargin: '0px 0px -40px 0px' }
-    );
-
-    els.forEach((el) => observer.observe(el));
-  }
-
-  // ── Active Nav Tracking ──
-  function initNavTracking() {
-    const sections = document.querySelectorAll('.section, .hero');
-    const links = document.querySelectorAll('.nav__link');
-    if (!sections.length || !links.length) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            const id = entry.target.id;
-            links.forEach((link) => {
-              link.classList.toggle(
-                'nav__link--active',
-                link.getAttribute('data-section') === id
-              );
-            });
-          }
-        });
-      },
-      { threshold: 0.2, rootMargin: '-64px 0px -40% 0px' }
-    );
-
-    sections.forEach((s) => observer.observe(s));
-  }
-
-  // ── Scrolled Nav Style ──
-  function initNavScroll() {
-    const nav = document.getElementById('nav');
-    if (!nav) return;
-
-    let ticking = false;
-    window.addEventListener('scroll', () => {
-      if (!ticking) {
-        requestAnimationFrame(() => {
-          nav.classList.toggle('nav--scrolled', window.scrollY > 40);
-          ticking = false;
-        });
-        ticking = true;
+      }, { threshold: 0.5 });
+      
+      observer.observe(target);
+      
+      // Also trigger on hover for nav links
+      if(target.classList.contains('nav__link')) {
+        target.addEventListener('mouseenter', () => decrypt(target));
       }
     });
   }
 
-  // ── Mobile Menu Toggle ──
-  function initMobileMenu() {
-    const toggle = document.getElementById('navToggle');
-    const mobile = document.getElementById('navMobile');
-    if (!toggle || !mobile) return;
+  // ── 3. 3D Tilt Effect (Vanilla JS) ──
+  function initTilt() {
+    const cards = document.querySelectorAll('.project-card, .timeline__card, .hero__terminal, .terminal-card');
 
-    toggle.addEventListener('click', () => {
-      toggle.classList.toggle('nav__toggle--open');
-      mobile.classList.toggle('nav__mobile--open');
+    cards.forEach(card => {
+      card.addEventListener('mousemove', (e) => {
+        const rect = card.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        // Calculate rotation
+        const centerX = rect.width / 2;
+        const centerY = rect.height / 2;
+        
+        const rotateX = ((y - centerY) / centerY) * -5; // Max -5deg to 5deg
+        const rotateY = ((x - centerX) / centerX) * 5;
+
+        // Apply transform
+        card.style.transform = `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale3d(1.02, 1.02, 1.02)`;
+        
+        // Dynamic border/shadow/glare effect could go here
+        // Simple glare using box-shadow
+        // card.style.boxShadow = `${-rotateY * 2}px ${rotateX * 2}px 20px rgba(0, 255, 204, 0.1)`;
+      });
+
+      card.addEventListener('mouseleave', () => {
+        card.style.transform = 'perspective(1000px) rotateX(0) rotateY(0) scale3d(1, 1, 1)';
+        // card.style.boxShadow = 'none';
+      });
+    });
+  }
+
+  // ── 4. HUD System Monitor ──
+  function initHUD() {
+    const timeEl = document.getElementById('hudTime');
+    const memEl = document.getElementById('hudMem');
+    
+    // Time
+    setInterval(() => {
+      const now = new Date();
+      timeEl.innerText = now.toISOString().split('T')[1].split('.')[0] + ' UTC';
+    }, 1000);
+
+    // Simulated Memory Usage
+    setInterval(() => {
+      const mem = Math.floor(Math.random() * 20) + 30; // 30-50%
+      memEl.innerText = mem + '%';
+    }, 2000);
+  }
+
+  // ── 5. Standard Animations (GSAP) ──
+  function initGSAP() {
+     // Typewriter for Hero Name
+    gsap.to("#typewriter", {
+      duration: 1.5,
+      text: "LUYUAN GE",
+      delay: 0.5,
+      ease: "none"
     });
 
-    // Close on link click
-    mobile.querySelectorAll('.nav__mobile-link').forEach((link) => {
-      link.addEventListener('click', () => {
-        toggle.classList.remove('nav__toggle--open');
-        mobile.classList.remove('nav__mobile--open');
+    // Reveal Sections
+    const sections = document.querySelectorAll('.reveal');
+    sections.forEach((section) => {
+      gsap.to(section, {
+        scrollTrigger: {
+          trigger: section,
+          start: "top 85%",
+          toggleActions: "play none none none"
+        },
+        opacity: 1,
+        y: 0,
+        duration: 0.8,
+        ease: "power2.out"
       });
     });
   }
 
   // ── Init ──
   document.addEventListener('DOMContentLoaded', () => {
-    initCanvas();
-    initReveal();
-    initNavTracking();
-    initNavScroll();
-    initMobileMenu();
+    initMatrix();
+    initDecryption();
+    initTilt();
+    initHUD();
+    initGSAP();
+    
+    // Nav Logic
+    const nav = document.getElementById('nav');
+    const toggle = document.getElementById('navToggle');
+    const mobile = document.getElementById('navMobile');
+    
+    if (toggle) {
+        toggle.addEventListener('click', () => {
+            mobile.classList.toggle('nav__mobile--open');
+        });
+    }
+
+    // Console Easter Egg
+    console.log("%c SYSTEM READY // ACCESS GRANTED ", "background: #000; color: #00ffcc; font-size: 14px; padding: 10px; border: 1px solid #00ffcc;");
   });
+
 })();
