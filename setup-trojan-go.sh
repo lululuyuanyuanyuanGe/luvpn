@@ -134,6 +134,9 @@ log "Renewal hooks created"
 #====================================================================
 log "Step 3: Installing Trojan-Go..."
 
+# Stop trojan-go if running (binary can't be overwritten while in use)
+systemctl stop trojan-go 2>/dev/null || true
+
 ARCH=$(uname -m)
 case $ARCH in
     aarch64) BINARY="trojan-go-linux-armv8.zip" ;;
@@ -220,6 +223,9 @@ server {
     location / {
         try_files \$uri \$uri/ =404;
     }
+    location ~ /\\.git {
+        deny all;
+    }
 }
 NGEOF
 
@@ -233,16 +239,16 @@ server {
 }
 NGEOF
 
-mkdir -p /var/www/trojan-disguise
-
 PORTFOLIO_REPO="https://github.com/lululuyuanyuanyuanGe/luyuan-resume-portfolio.git"
-rm -rf /tmp/luyuan-portfolio
-git clone --depth 1 "$PORTFOLIO_REPO" /tmp/luyuan-portfolio || err "Failed to clone portfolio repo"
+PORTFOLIO_DIR="/var/www/trojan-disguise"
 
-cp /tmp/luyuan-portfolio/index.html /var/www/trojan-disguise/
-cp /tmp/luyuan-portfolio/style.css /var/www/trojan-disguise/
-cp /tmp/luyuan-portfolio/script.js /var/www/trojan-disguise/
-rm -rf /tmp/luyuan-portfolio
+if [ -d "$PORTFOLIO_DIR/.git" ]; then
+    log "Portfolio repo already cloned, pulling latest..."
+    git -C "$PORTFOLIO_DIR" pull || warn "Git pull failed, using existing files"
+else
+    rm -rf "$PORTFOLIO_DIR"
+    git clone "$PORTFOLIO_REPO" "$PORTFOLIO_DIR" || err "Failed to clone portfolio repo"
+fi
 
 log "Portfolio disguise page deployed"
 
@@ -280,12 +286,43 @@ systemctl daemon-reload
 log "Systemd service created"
 
 #====================================================================
+# Step 6.5: Create portfolio auto-update timer
+#====================================================================
+log "Step 6.5: Creating portfolio auto-update service..."
+
+cat > /etc/systemd/system/portfolio-update.service <<'SVCEOF'
+[Unit]
+Description=Pull latest portfolio website from GitHub
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/www/trojan-disguise
+ExecStart=/usr/bin/git pull --ff-only
+SVCEOF
+
+cat > /etc/systemd/system/portfolio-update.timer <<'SVCEOF'
+[Unit]
+Description=Auto-update portfolio website every 10 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target
+SVCEOF
+
+systemctl daemon-reload
+log "Portfolio auto-update timer created (every 10 minutes)"
+
+#====================================================================
 # Step 7: Start services
 #====================================================================
 log "Step 7: Starting services..."
 
 systemctl enable --now nginx
 systemctl enable --now trojan-go
+systemctl enable --now portfolio-update.timer
 
 sleep 2
 
@@ -326,6 +363,10 @@ echo "    sudo systemctl status trojan-go    # Check status"
 echo "    sudo systemctl restart trojan-go   # Restart"
 echo "    sudo tail -f /var/log/trojan-go/trojan-go.log  # Live logs"
 echo "    sudo cat /etc/trojan-go/config.json  # View config"
+echo ""
+echo "  Portfolio auto-update (pulls from GitHub every 10 minutes):"
+echo "    sudo systemctl status portfolio-update.timer  # Check timer"
+echo "    sudo systemctl start portfolio-update.service # Force update now"
 echo ""
 echo "  IMPORTANT: Make sure your router forwards ports 80 and 443 to this Pi"
 echo "  IMPORTANT: If using Cloudflare, set SSL/TLS to 'Full' or 'Full (Strict)'"
