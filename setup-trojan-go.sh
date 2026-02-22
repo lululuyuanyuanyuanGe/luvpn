@@ -70,7 +70,26 @@ fi
 #====================================================================
 log "Step 1: Installing dependencies..."
 apt update
-apt install -y nginx unzip wget certbot
+apt install -y nginx unzip wget certbot ufw git
+
+#====================================================================
+# Step 1.5: Configure UFW firewall
+#====================================================================
+log "Step 1.5: Configuring UFW firewall..."
+
+ufw allow 22/tcp comment "SSH"
+ufw allow 80/tcp comment "HTTP"
+ufw allow 443/tcp comment "HTTPS"
+
+if ! ufw status | grep -q "Status: active"; then
+    log "Enabling UFW..."
+    echo "y" | ufw enable
+else
+    log "UFW already active, rules updated"
+    ufw reload
+fi
+
+log "UFW configured - SSH (22), HTTP (80), HTTPS (443) allowed"
 
 #====================================================================
 # Step 2: Obtain TLS certificate
@@ -215,25 +234,17 @@ server {
 NGEOF
 
 mkdir -p /var/www/trojan-disguise
-cat > /var/www/trojan-disguise/index.html <<'HTMLEOF'
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Welcome</title>
-    <style>
-        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
-        h1 { color: #333; }
-        p { color: #666; line-height: 1.6; }
-    </style>
-</head>
-<body>
-    <h1>Welcome to My Personal Site</h1>
-    <p>This site is currently under construction. Please check back later.</p>
-</body>
-</html>
-HTMLEOF
+
+PORTFOLIO_REPO="https://github.com/lululuyuanyuanyuanGe/luyuan-resume-portfolio.git"
+rm -rf /tmp/luyuan-portfolio
+git clone --depth 1 "$PORTFOLIO_REPO" /tmp/luyuan-portfolio || err "Failed to clone portfolio repo"
+
+cp /tmp/luyuan-portfolio/index.html /var/www/trojan-disguise/
+cp /tmp/luyuan-portfolio/style.css /var/www/trojan-disguise/
+cp /tmp/luyuan-portfolio/script.js /var/www/trojan-disguise/
+rm -rf /tmp/luyuan-portfolio
+
+log "Portfolio disguise page deployed"
 
 ln -sf /etc/nginx/sites-available/trojan-disguise /etc/nginx/sites-enabled/
 ln -sf /etc/nginx/sites-available/redirect /etc/nginx/sites-enabled/
