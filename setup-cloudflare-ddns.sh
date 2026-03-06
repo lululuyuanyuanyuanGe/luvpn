@@ -58,7 +58,7 @@ if [ -z "$CF_API_TOKEN" ]; then
 fi
 
 log "Validating API token..."
-TOKEN_CHECK=$(curl -s -X GET "https://api.cloudflare.com/client/v4/user/tokens/verify" \
+TOKEN_CHECK=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones" \
     -H "Authorization: Bearer ${CF_API_TOKEN}" \
     -H "Content-Type: application/json")
 

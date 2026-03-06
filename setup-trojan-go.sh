@@ -70,7 +70,7 @@ fi
 #====================================================================
 log "Step 1: Installing dependencies..."
 apt update
-apt install -y nginx unzip wget certbot ufw git
+apt install -y nginx unzip wget certbot ufw git jq
 
 #====================================================================
 # Step 1.5: Configure UFW firewall
