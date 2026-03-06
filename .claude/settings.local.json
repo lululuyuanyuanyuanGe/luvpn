@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(git -C /Users/luyuan/Projects/luvpn log --oneline -10)"
     ]
   }
 }
