@@ -1,7 +1,7 @@
 #!/bin/bash
 #====================================================================
 # Full Setup Orchestrator
-# Runs Trojan-Go setup followed by Cloudflare DDNS setup
+# Runs Cloudflare DDNS setup followed by Trojan-Go setup
 # Usage: sudo bash setup.sh
 #====================================================================
 
@@ -22,26 +22,34 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 #====================================================================
-# Step 1: Trojan-Go Setup
+# Step 1: Cloudflare DDNS Setup
 #====================================================================
 echo ""
 echo "========================================================================="
-log "  Phase 1: Trojan-Go VPN Setup"
-echo "========================================================================="
-echo ""
-
-bash "${SCRIPT_DIR}/setup-trojan-go.sh"
-
-#====================================================================
-# Step 2: Cloudflare DDNS Setup
-#====================================================================
-echo ""
-echo "========================================================================="
-log "  Phase 2: Cloudflare Dynamic DNS Setup"
+log "  Phase 1: Cloudflare Dynamic DNS Setup"
 echo "========================================================================="
 echo ""
 
 bash "${SCRIPT_DIR}/setup-cloudflare-ddns.sh"
+
+#====================================================================
+# Step 2: Trojan-Go Setup
+#====================================================================
+echo ""
+echo "========================================================================="
+log "  Phase 2: Trojan-Go VPN Setup"
+echo "========================================================================="
+echo ""
+
+CF_CONFIG="/etc/cloudflare-ddns/config"
+if [ -f "$CF_CONFIG" ]; then
+    # Reuse the DDNS choice so Trojan-Go can pick direct or WSS mode.
+    source "$CF_CONFIG"
+    export LUVPN_CF_PROXIED="$CF_PROXIED"
+    export LUVPN_DOMAIN="$CF_RECORD_NAME"
+fi
+
+bash "${SCRIPT_DIR}/setup-trojan-go.sh"
 
 #====================================================================
 # Done

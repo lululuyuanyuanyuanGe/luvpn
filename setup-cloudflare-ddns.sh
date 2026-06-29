@@ -17,6 +17,18 @@ log()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 err()  { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
+get_public_ip() {
+    local ip=""
+    for service in "https://api.ipify.org" "https://icanhazip.com" "https://ifconfig.me/ip"; do
+        ip=$(curl -s --max-time 10 "$service" 2>/dev/null | tr -d '[:space:]')
+        if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "$ip"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Paths
 CONFIG_DIR="/etc/cloudflare-ddns"
 CONFIG_FILE="${CONFIG_DIR}/config"
@@ -102,21 +114,18 @@ RECORD_RESPONSE=$(curl -s -X GET \
     -H "Content-Type: application/json")
 
 CF_RECORD_ID=$(echo "$RECORD_RESPONSE" | jq -r '.result[0].id // empty')
+CURRENT_DNS_PROXIED="false"
 
 if [ -n "$CF_RECORD_ID" ]; then
     CURRENT_DNS_IP=$(echo "$RECORD_RESPONSE" | jq -r '.result[0].content // empty')
-    log "Found existing A record: ${CF_RECORD_NAME} -> ${CURRENT_DNS_IP}"
+    CURRENT_DNS_PROXIED=$(echo "$RECORD_RESPONSE" | jq -r '.result[0].proxied // false')
+    log "Found existing A record: ${CF_RECORD_NAME} -> ${CURRENT_DNS_IP} (proxied: ${CURRENT_DNS_PROXIED})"
 else
     warn "No existing A record found for ${CF_RECORD_NAME}"
     read -p "Create a new A record? (y/n): " CREATE_RECORD
     if [ "$CREATE_RECORD" = "y" ]; then
         log "Getting current public IP..."
-        CURRENT_IP=$(curl -s --max-time 10 "https://api.ipify.org" 2>/dev/null || \
-                     curl -s --max-time 10 "https://icanhazip.com" 2>/dev/null || \
-                     curl -s --max-time 10 "https://ifconfig.me/ip" 2>/dev/null)
-        CURRENT_IP=$(echo "$CURRENT_IP" | tr -d '[:space:]')
-
-        if [ -z "$CURRENT_IP" ]; then
+        if ! CURRENT_IP=$(get_public_ip); then
             err "Could not determine public IP to create DNS record"
         fi
 
@@ -130,6 +139,7 @@ else
         CREATE_SUCCESS=$(echo "$CREATE_RESPONSE" | jq -r '.success')
         if [ "$CREATE_SUCCESS" = "true" ]; then
             CF_RECORD_ID=$(echo "$CREATE_RESPONSE" | jq -r '.result.id')
+            CURRENT_DNS_PROXIED=$(echo "$CREATE_RESPONSE" | jq -r '.result.proxied // false')
             log "A record created: ${CF_RECORD_ID}"
         else
             CREATE_ERRORS=$(echo "$CREATE_RESPONSE" | jq -r '.errors[]?.message // "Unknown error"')
@@ -141,12 +151,19 @@ else
 fi
 
 # --- Proxied status ---
-read -p "Enable Cloudflare proxy (orange cloud)? (y/n) [n]: " CF_PROXIED_INPUT
-if [ "$CF_PROXIED_INPUT" = "y" ]; then
-    CF_PROXIED="true"
-else
-    CF_PROXIED="false"
+PROXY_DEFAULT="n"
+if [ "$CURRENT_DNS_PROXIED" = "true" ]; then
+    PROXY_DEFAULT="y"
 fi
+
+read -p "Enable Cloudflare proxy (orange cloud)? (y/n) [${PROXY_DEFAULT}]: " CF_PROXIED_INPUT
+CF_PROXIED_INPUT="${CF_PROXIED_INPUT:-$PROXY_DEFAULT}"
+
+case "$CF_PROXIED_INPUT" in
+    y|Y) CF_PROXIED="true" ;;
+    n|N) CF_PROXIED="false" ;;
+    *)   err "Please answer y or n for Cloudflare proxy mode" ;;
+esac
 
 # --- Confirmation ---
 echo ""
@@ -168,6 +185,29 @@ if [ "$CONFIRM" != "y" ]; then
 fi
 
 #====================================================================
+# Step 2.5: Apply DNS record mode now
+#====================================================================
+log "Step 2.5: Applying selected DNS record mode..."
+
+if ! CURRENT_IP=$(get_public_ip); then
+    err "Could not determine public IP to update DNS record"
+fi
+
+APPLY_RESPONSE=$(curl -s -X PUT \
+    "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${CF_RECORD_ID}" \
+    -H "Authorization: Bearer ${CF_API_TOKEN}" \
+    -H "Content-Type: application/json" \
+    --data "{\"type\":\"A\",\"name\":\"${CF_RECORD_NAME}\",\"content\":\"${CURRENT_IP}\",\"ttl\":1,\"proxied\":${CF_PROXIED}}")
+
+APPLY_SUCCESS=$(echo "$APPLY_RESPONSE" | jq -r '.success')
+if [ "$APPLY_SUCCESS" = "true" ]; then
+    log "DNS record applied: ${CF_RECORD_NAME} -> ${CURRENT_IP} (proxied: ${CF_PROXIED})"
+else
+    APPLY_ERRORS=$(echo "$APPLY_RESPONSE" | jq -r '.errors[]?.message // "Unknown error"')
+    err "Failed to apply DNS record mode: ${APPLY_ERRORS}"
+fi
+
+#====================================================================
 # Step 3: Save configuration
 #====================================================================
 log "Step 3: Saving configuration..."
@@ -178,6 +218,7 @@ cat > "$CONFIG_FILE" <<CFEOF
 # Cloudflare DDNS Configuration
 # Generated on $(date)
 CF_API_TOKEN="${CF_API_TOKEN}"
+CF_DOMAIN="${CF_DOMAIN}"
 CF_ZONE_ID="${CF_ZONE_ID}"
 CF_RECORD_ID="${CF_RECORD_ID}"
 CF_RECORD_NAME="${CF_RECORD_NAME}"
@@ -230,10 +271,10 @@ get_public_ip() {
 
 CURRENT_IP=$(get_public_ip) || { log_msg "ERROR: Failed to determine public IP"; exit 1; }
 
-# Check cache — skip if IP hasn't changed
+# Check cache — skip if IP and proxy mode have not changed
 if [ -f "$CACHE_FILE" ]; then
-    CACHED_IP=$(cat "$CACHE_FILE")
-    if [ "$CURRENT_IP" = "$CACHED_IP" ]; then
+    CACHED_STATE=$(cat "$CACHE_FILE")
+    if [ "${CURRENT_IP}|${CF_PROXIED}" = "$CACHED_STATE" ]; then
         exit 0
     fi
 fi
@@ -245,20 +286,21 @@ DNS_RESPONSE=$(curl -s --max-time 15 -X GET \
     -H "Content-Type: application/json")
 
 DNS_IP=$(echo "$DNS_RESPONSE" | jq -r '.result.content // empty')
+DNS_PROXIED=$(echo "$DNS_RESPONSE" | jq -r '.result.proxied // false')
 
 if [ -z "$DNS_IP" ]; then
     log_msg "ERROR: Failed to get DNS record from Cloudflare"
     exit 1
 fi
 
-# Update cache and exit if IPs match
-if [ "$CURRENT_IP" = "$DNS_IP" ]; then
-    echo "$CURRENT_IP" > "$CACHE_FILE"
+# Update cache and exit if IP and proxy mode match
+if [ "$CURRENT_IP" = "$DNS_IP" ] && [ "$CF_PROXIED" = "$DNS_PROXIED" ]; then
+    echo "${CURRENT_IP}|${CF_PROXIED}" > "$CACHE_FILE"
     exit 0
 fi
 
-# IPs differ — update Cloudflare
-log_msg "IP changed: $DNS_IP -> $CURRENT_IP, updating DNS..."
+# IP or proxy mode differs — update Cloudflare
+log_msg "DNS state changed: ${DNS_IP}/${DNS_PROXIED} -> ${CURRENT_IP}/${CF_PROXIED}, updating DNS..."
 
 UPDATE_RESPONSE=$(curl -s --max-time 15 -X PUT \
     "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${CF_RECORD_ID}" \
@@ -269,8 +311,8 @@ UPDATE_RESPONSE=$(curl -s --max-time 15 -X PUT \
 SUCCESS=$(echo "$UPDATE_RESPONSE" | jq -r '.success')
 
 if [ "$SUCCESS" = "true" ]; then
-    log_msg "SUCCESS: DNS updated to $CURRENT_IP"
-    echo "$CURRENT_IP" > "$CACHE_FILE"
+    log_msg "SUCCESS: DNS updated to ${CURRENT_IP} (proxied: ${CF_PROXIED})"
+    echo "${CURRENT_IP}|${CF_PROXIED}" > "$CACHE_FILE"
 else
     ERRORS=$(echo "$UPDATE_RESPONSE" | jq -r '.errors[]?.message // "Unknown error"')
     log_msg "ERROR: DNS update failed: $ERRORS"

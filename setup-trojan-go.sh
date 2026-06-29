@@ -16,14 +16,24 @@ log()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 err()  { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
+normalize_bool() {
+    case "$1" in
+        true|TRUE|True|1|yes|YES|Yes|y|Y) echo "true" ;;
+        false|FALSE|False|0|no|NO|No|n|N) echo "false" ;;
+        *) echo "" ;;
+    esac
+}
+
 #====================================================================
 # CONFIGURATION - Edit these before running
 #====================================================================
-DOMAIN=""
-PASSWORD=""
-WS_PATH="/ws-$(openssl rand -hex 4)"
+DOMAIN="${LUVPN_DOMAIN:-}"
+PASSWORD="${LUVPN_PASSWORD:-}"
+WS_PATH="${LUVPN_WS_PATH:-/ws-$(openssl rand -hex 4)}"
 TROJAN_GO_VERSION="v0.10.6"
 FALLBACK_PORT=8080
+CLOUDFLARE_DDNS_CONFIG="${LUVPN_CF_CONFIG:-/etc/cloudflare-ddns/config}"
+CF_PROXY_MODE="${LUVPN_CF_PROXIED:-}"
 
 #====================================================================
 # Interactive prompts if not pre-configured
@@ -38,6 +48,36 @@ fi
 
 if [ -z "$DOMAIN" ]; then
     err "Domain name is required"
+fi
+
+CF_PROXY_MODE="$(normalize_bool "$CF_PROXY_MODE")"
+if [ -z "$CF_PROXY_MODE" ] && [ -f "$CLOUDFLARE_DDNS_CONFIG" ]; then
+    source "$CLOUDFLARE_DDNS_CONFIG"
+    if [ "${CF_RECORD_NAME:-}" = "$DOMAIN" ]; then
+        CF_PROXY_MODE="$(normalize_bool "${CF_PROXIED:-}")"
+        if [ -n "$CF_PROXY_MODE" ]; then
+            log "Cloudflare DDNS config detected for ${DOMAIN} (proxied: ${CF_PROXY_MODE})"
+        fi
+    elif [ -n "${CF_RECORD_NAME:-}" ]; then
+        warn "Cloudflare DDNS config is for ${CF_RECORD_NAME}, not ${DOMAIN}; asking for proxy mode"
+    fi
+fi
+
+if [ -z "$CF_PROXY_MODE" ]; then
+    read -p "Will this domain use Cloudflare proxy (orange cloud)? (y/n) [n]: " CF_PROXY_INPUT
+    CF_PROXY_INPUT="${CF_PROXY_INPUT:-n}"
+    CF_PROXY_MODE="$(normalize_bool "$CF_PROXY_INPUT")"
+    if [ -z "$CF_PROXY_MODE" ]; then
+        err "Please answer y or n for Cloudflare proxy mode"
+    fi
+fi
+
+if [ "$CF_PROXY_MODE" = "true" ]; then
+    WS_ENABLED="true"
+    TRANSPORT_MODE="Cloudflare proxied WebSocket Secure (WSS)"
+else
+    WS_ENABLED="false"
+    TRANSPORT_MODE="Direct Trojan over TLS"
 fi
 
 if [ -z "$PASSWORD" ]; then
@@ -56,6 +96,7 @@ log "  Trojan-Go Setup Configuration"
 log "========================================="
 log "Domain:    $DOMAIN"
 log "Password:  $PASSWORD"
+log "Mode:      $TRANSPORT_MODE"
 log "WS Path:   $WS_PATH"
 log "========================================="
 echo ""
@@ -209,7 +250,7 @@ cat > /etc/trojan-go/config.json <<TJEOF
         "idle_timeout": 60
     },
     "websocket": {
-        "enabled": false,
+        "enabled": ${WS_ENABLED},
         "path": "${WS_PATH}",
         "host": "${DOMAIN}"
     },
@@ -356,6 +397,8 @@ fi
 #====================================================================
 # Done - Print client info
 #====================================================================
+WS_PATH_ENCODED="${WS_PATH//\//%2F}"
+
 echo ""
 echo "========================================================================="
 echo -e "${GREEN} SETUP COMPLETE!${NC}"
@@ -364,12 +407,17 @@ echo ""
 echo "  Domain:     $DOMAIN"
 echo "  Password:   $PASSWORD"
 echo "  Port:       443"
-echo "  WebSocket:  disabled (enable in /etc/trojan-go/config.json if needed)"
-echo "  WS Path:    $WS_PATH (for future use)"
+echo "  Transport:  $TRANSPORT_MODE"
+echo "  WebSocket:  $WS_ENABLED"
+echo "  WS Path:    $WS_PATH"
 echo ""
 echo "  v2rayN Share Link (copy and import):"
 echo ""
-echo "  trojan://${PASSWORD}@${DOMAIN}:443?sni=${DOMAIN}#Trojan-${DOMAIN}"
+if [ "$WS_ENABLED" = "true" ]; then
+    echo "  trojan://${PASSWORD}@${DOMAIN}:443?security=tls&type=ws&host=${DOMAIN}&path=${WS_PATH_ENCODED}&sni=${DOMAIN}#Trojan-WSS-${DOMAIN}"
+else
+    echo "  trojan://${PASSWORD}@${DOMAIN}:443?sni=${DOMAIN}#Trojan-${DOMAIN}"
+fi
 echo ""
 echo "========================================================================="
 echo ""
@@ -385,6 +433,10 @@ echo "    sudo systemctl start portfolio-update.service # Force update now"
 echo ""
 echo "  IMPORTANT: Make sure your router forwards ports 80 and 443 to this Pi"
 echo "  IMPORTANT: If using Cloudflare, set SSL/TLS to 'Full' or 'Full (Strict)'"
-echo "  IMPORTANT: If using Cloudflare, set DNS to 'DNS only' (grey cloud)"
+if [ "$WS_ENABLED" = "true" ]; then
+    echo "  IMPORTANT: Use the WebSocket Secure (WSS) client link above while Cloudflare proxy is enabled"
+else
+    echo "  IMPORTANT: If using Cloudflare proxy (orange cloud), rerun setup in WebSocket Secure (WSS) mode"
+fi
 echo ""
 echo "========================================================================="
