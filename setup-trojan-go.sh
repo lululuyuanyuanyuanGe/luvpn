@@ -307,7 +307,7 @@ if [ -z "$DESIRED_PROXIED" ]; then
         "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${CF_RECORD_ID}" \
         -H "Authorization: Bearer ${CF_API_TOKEN}" \
         -H "Content-Type: application/json")
-    DESIRED_PROXIED=$(echo "$DNS_RESPONSE" | jq -r '.result.proxied // empty')
+    DESIRED_PROXIED=$(echo "$DNS_RESPONSE" | jq -r '.result.proxied | tostring')
     DESIRED_PROXIED="$(normalize_bool "$DESIRED_PROXIED")"
 fi
 
