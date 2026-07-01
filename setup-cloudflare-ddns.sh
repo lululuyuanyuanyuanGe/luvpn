@@ -33,6 +33,7 @@ get_public_ip() {
 CONFIG_DIR="/etc/cloudflare-ddns"
 CONFIG_FILE="${CONFIG_DIR}/config"
 UPDATER_SCRIPT="/usr/local/bin/cloudflare-ddns-update.sh"
+MODE_SYNC_SCRIPT="/usr/local/bin/trojan-go-sync-cloudflare-mode.sh"
 LOG_FILE="/var/log/cloudflare-ddns.log"
 
 #====================================================================
@@ -237,11 +238,13 @@ log "Step 4: Creating DDNS updater script..."
 cat > "$UPDATER_SCRIPT" <<'SCRIPT'
 #!/bin/bash
 # Cloudflare DDNS Updater
-# Runs via systemd timer to keep DNS in sync with public IP
+# Runs via systemd timer to keep DNS in sync with public IP.
+# Cloudflare is the source of truth for the proxied/orange-cloud state.
 
 CONFIG_FILE="/etc/cloudflare-ddns/config"
 LOG_FILE="/var/log/cloudflare-ddns.log"
 CACHE_FILE="/var/tmp/cloudflare-ddns-ip.cache"
+MODE_SYNC_SCRIPT="/usr/local/bin/trojan-go-sync-cloudflare-mode.sh"
 
 log_msg() {
     local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
@@ -271,15 +274,7 @@ get_public_ip() {
 
 CURRENT_IP=$(get_public_ip) || { log_msg "ERROR: Failed to determine public IP"; exit 1; }
 
-# Check cache — skip if IP and proxy mode have not changed
-if [ -f "$CACHE_FILE" ]; then
-    CACHED_STATE=$(cat "$CACHE_FILE")
-    if [ "${CURRENT_IP}|${CF_PROXIED}" = "$CACHED_STATE" ]; then
-        exit 0
-    fi
-fi
-
-# Fetch current DNS record from Cloudflare
+# Fetch current DNS record from Cloudflare. The remote proxied value wins.
 DNS_RESPONSE=$(curl -s --max-time 15 -X GET \
     "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${CF_RECORD_ID}" \
     -H "Authorization: Bearer ${CF_API_TOKEN}" \
@@ -293,26 +288,39 @@ if [ -z "$DNS_IP" ]; then
     exit 1
 fi
 
-# Update cache and exit if IP and proxy mode match
-if [ "$CURRENT_IP" = "$DNS_IP" ] && [ "$CF_PROXIED" = "$DNS_PROXIED" ]; then
-    echo "${CURRENT_IP}|${CF_PROXIED}" > "$CACHE_FILE"
+# Keep the local config in sync with Cloudflare instead of overwriting Cloudflare.
+if grep -q '^CF_PROXIED=' "$CONFIG_FILE"; then
+    sed -i "s/^CF_PROXIED=.*/CF_PROXIED=${DNS_PROXIED}/" "$CONFIG_FILE"
+else
+    echo "CF_PROXIED=${DNS_PROXIED}" >> "$CONFIG_FILE"
+fi
+
+if [ -x "$MODE_SYNC_SCRIPT" ]; then
+    "$MODE_SYNC_SCRIPT" "$DNS_PROXIED" || log_msg "WARN: Trojan-Go mode sync failed"
+else
+    log_msg "INFO: Trojan-Go mode sync script not installed yet, skipping"
+fi
+
+# Update cache and exit if IP and current Cloudflare proxy mode match
+if [ "$CURRENT_IP" = "$DNS_IP" ]; then
+    echo "${CURRENT_IP}|${DNS_PROXIED}" > "$CACHE_FILE"
     exit 0
 fi
 
-# IP or proxy mode differs — update Cloudflare
-log_msg "DNS state changed: ${DNS_IP}/${DNS_PROXIED} -> ${CURRENT_IP}/${CF_PROXIED}, updating DNS..."
+# IP differs — update Cloudflare while preserving its current proxy mode
+log_msg "DNS IP changed: ${DNS_IP} -> ${CURRENT_IP}, preserving proxied=${DNS_PROXIED}"
 
 UPDATE_RESPONSE=$(curl -s --max-time 15 -X PUT \
     "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${CF_RECORD_ID}" \
     -H "Authorization: Bearer ${CF_API_TOKEN}" \
     -H "Content-Type: application/json" \
-    --data "{\"type\":\"A\",\"name\":\"${CF_RECORD_NAME}\",\"content\":\"${CURRENT_IP}\",\"ttl\":1,\"proxied\":${CF_PROXIED}}")
+    --data "{\"type\":\"A\",\"name\":\"${CF_RECORD_NAME}\",\"content\":\"${CURRENT_IP}\",\"ttl\":1,\"proxied\":${DNS_PROXIED}}")
 
 SUCCESS=$(echo "$UPDATE_RESPONSE" | jq -r '.success')
 
 if [ "$SUCCESS" = "true" ]; then
-    log_msg "SUCCESS: DNS updated to ${CURRENT_IP} (proxied: ${CF_PROXIED})"
-    echo "${CURRENT_IP}|${CF_PROXIED}" > "$CACHE_FILE"
+    log_msg "SUCCESS: DNS updated to ${CURRENT_IP} (proxied: ${DNS_PROXIED})"
+    echo "${CURRENT_IP}|${DNS_PROXIED}" > "$CACHE_FILE"
 else
     ERRORS=$(echo "$UPDATE_RESPONSE" | jq -r '.errors[]?.message // "Unknown error"')
     log_msg "ERROR: DNS update failed: $ERRORS"
@@ -360,7 +368,8 @@ log "Systemd service and timer created"
 log "Step 6: Configuring log rotation..."
 
 cat > /etc/logrotate.d/cloudflare-ddns <<'LREOF'
-/var/log/cloudflare-ddns.log {
+/var/log/cloudflare-ddns.log
+/var/log/trojan-go-mode-sync.log {
     weekly
     rotate 4
     compress
@@ -406,6 +415,7 @@ echo "  Interval:   Every 5 minutes"
 echo ""
 echo "  Config:     $CONFIG_FILE"
 echo "  Updater:    $UPDATER_SCRIPT"
+echo "  Mode Sync:  $MODE_SYNC_SCRIPT"
 echo "  Log:        $LOG_FILE"
 echo ""
 echo "========================================================================="
@@ -414,6 +424,7 @@ echo "  Useful commands:"
 echo "    sudo systemctl status cloudflare-ddns.timer    # Check timer status"
 echo "    sudo systemctl list-timers cloudflare-ddns*    # Next run time"
 echo "    sudo systemctl start cloudflare-ddns.service   # Force update now"
+echo "    sudo $MODE_SYNC_SCRIPT                         # Force Trojan-Go mode sync"
 echo "    sudo tail -f $LOG_FILE      # View logs"
 echo "    sudo cat $CONFIG_FILE           # View config"
 echo ""

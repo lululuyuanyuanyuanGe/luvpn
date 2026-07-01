@@ -34,6 +34,7 @@ TROJAN_GO_VERSION="v0.10.6"
 FALLBACK_PORT=8080
 CLOUDFLARE_DDNS_CONFIG="${LUVPN_CF_CONFIG:-/etc/cloudflare-ddns/config}"
 CF_PROXY_MODE="${LUVPN_CF_PROXIED:-}"
+MODE_SYNC_SCRIPT="/usr/local/bin/trojan-go-sync-cloudflare-mode.sh"
 
 #====================================================================
 # Interactive prompts if not pre-configured
@@ -266,6 +267,85 @@ TJEOF
 log "Trojan-Go config created"
 
 #====================================================================
+# Step 4.5: Create Cloudflare proxy mode sync script
+#====================================================================
+log "Step 4.5: Creating Cloudflare proxy mode sync script..."
+
+cat > "$MODE_SYNC_SCRIPT" <<'SCRIPT'
+#!/bin/bash
+# Sync Trojan-Go transport mode with Cloudflare's current proxied state.
+
+set -e
+
+CONFIG_FILE="/etc/cloudflare-ddns/config"
+TROJAN_CONFIG="/etc/trojan-go/config.json"
+LOG_FILE="/var/log/trojan-go-mode-sync.log"
+
+log_msg() {
+    local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $1"
+    echo "$msg" >> "$LOG_FILE"
+    echo "$msg"
+}
+
+normalize_bool() {
+    case "$1" in
+        true|TRUE|True|1|yes|YES|Yes|y|Y) echo "true" ;;
+        false|FALSE|False|0|no|NO|No|n|N) echo "false" ;;
+        *) echo "" ;;
+    esac
+}
+
+DESIRED_PROXIED="$(normalize_bool "${1:-}")"
+
+if [ -z "$DESIRED_PROXIED" ]; then
+    if [ ! -f "$CONFIG_FILE" ]; then
+        log_msg "ERROR: Cloudflare DDNS config not found: $CONFIG_FILE"
+        exit 1
+    fi
+    source "$CONFIG_FILE"
+    DNS_RESPONSE=$(curl -s --max-time 15 -X GET \
+        "https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records/${CF_RECORD_ID}" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}" \
+        -H "Content-Type: application/json")
+    DESIRED_PROXIED=$(echo "$DNS_RESPONSE" | jq -r '.result.proxied // empty')
+    DESIRED_PROXIED="$(normalize_bool "$DESIRED_PROXIED")"
+fi
+
+if [ -z "$DESIRED_PROXIED" ]; then
+    log_msg "ERROR: Could not determine Cloudflare proxied mode"
+    exit 1
+fi
+
+if [ ! -f "$TROJAN_CONFIG" ]; then
+    log_msg "INFO: Trojan-Go config not found yet, skipping mode sync"
+    exit 0
+fi
+
+CURRENT_WS=$(jq -r '.websocket.enabled // false' "$TROJAN_CONFIG")
+CURRENT_WS="$(normalize_bool "$CURRENT_WS")"
+
+if [ "$CURRENT_WS" = "$DESIRED_PROXIED" ]; then
+    log_msg "Trojan-Go already matches Cloudflare proxied=${DESIRED_PROXIED}"
+    exit 0
+fi
+
+TMP_CONFIG=$(mktemp)
+jq --argjson enabled "$DESIRED_PROXIED" '.websocket.enabled = $enabled' "$TROJAN_CONFIG" > "$TMP_CONFIG"
+cat "$TMP_CONFIG" > "$TROJAN_CONFIG"
+rm -f "$TMP_CONFIG"
+
+if systemctl list-unit-files trojan-go.service >/dev/null 2>&1; then
+    systemctl restart trojan-go
+    log_msg "Switched Trojan-Go websocket.enabled=${DESIRED_PROXIED} and restarted trojan-go"
+else
+    log_msg "Switched Trojan-Go websocket.enabled=${DESIRED_PROXIED}; trojan-go service is not installed yet"
+fi
+SCRIPT
+
+chmod +x "$MODE_SYNC_SCRIPT"
+log "Mode sync script created at ${MODE_SYNC_SCRIPT}"
+
+#====================================================================
 # Step 5: Configure Nginx fallback
 #====================================================================
 log "Step 5: Configuring Nginx fallback page..."
@@ -426,6 +506,7 @@ echo "    sudo systemctl status trojan-go    # Check status"
 echo "    sudo systemctl restart trojan-go   # Restart"
 echo "    sudo tail -f /var/log/trojan-go/trojan-go.log  # Live logs"
 echo "    sudo cat /etc/trojan-go/config.json  # View config"
+echo "    sudo $MODE_SYNC_SCRIPT  # Sync mode from Cloudflare"
 echo ""
 echo "  Portfolio auto-update (pulls from GitHub every 10 minutes):"
 echo "    sudo systemctl status portfolio-update.timer  # Check timer"
@@ -438,5 +519,6 @@ if [ "$WS_ENABLED" = "true" ]; then
 else
     echo "  IMPORTANT: If using Cloudflare proxy (orange cloud), rerun setup in WebSocket Secure (WSS) mode"
 fi
+echo "  IMPORTANT: After setup, Cloudflare DDNS will keep Trojan-Go mode synced with the current orange/grey cloud setting"
 echo ""
 echo "========================================================================="
