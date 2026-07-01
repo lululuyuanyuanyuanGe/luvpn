@@ -512,13 +512,13 @@ echo "  Portfolio auto-update (pulls from GitHub every 10 minutes):"
 echo "    sudo systemctl status portfolio-update.timer  # Check timer"
 echo "    sudo systemctl start portfolio-update.service # Force update now"
 echo ""
-echo "  IMPORTANT: Make sure your router forwards ports 80 and 443 to this Pi"
-echo "  IMPORTANT: If using Cloudflare, set SSL/TLS to 'Full' or 'Full (Strict)'"
+echo "  IMPORTANT: Make sure ports 80 and 443 are open to this server"
+echo "  IMPORTANT: If using Cloudflare, set SSL/TLS (Secure Sockets Layer/Transport Layer Security) to 'Full' or 'Full (Strict)'"
 if [ "$WS_ENABLED" = "true" ]; then
     echo "  IMPORTANT: Use the WebSocket Secure (WSS) client link above while Cloudflare proxy is enabled"
 else
-    echo "  IMPORTANT: If using Cloudflare proxy (orange cloud), rerun setup in WebSocket Secure (WSS) mode"
+    echo "  IMPORTANT: Use the direct Trojan link above while Cloudflare proxy is disabled"
 fi
-echo "  IMPORTANT: After setup, Cloudflare DDNS will keep Trojan-Go mode synced with the current orange/grey cloud setting"
+echo "  IMPORTANT: Cloudflare Dynamic DNS (DDNS) will auto-sync Trojan-Go after orange/grey cloud changes"
 echo ""
 echo "========================================================================="
